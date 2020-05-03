@@ -6,7 +6,7 @@ import argparse
 import ctypes
 import os
 import socket
-import subprocess
+from pyroute2 import IPRoute
 import multiprocessing
 libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
@@ -274,17 +274,19 @@ def mk_veth():
         else:
             pid = tasks[0]
             break
-    subprocess.check_output(['ip', 'link', 'add', 'eth1', 'type', 'veth', 'peer', 'name', 'eth0'])
-    subprocess.check_output(['ip', 'link', 'set', 'eth0', 'netns', pid.__str__()])
-    subprocess.check_output(['ip', 'address', 'add', 'dev', 'eth1', '10.0.1.1/24'])
-    subprocess.check_output(['ip', 'link', 'set', 'eth1', 'up'])
+
+    ip = IPRoute()
+    ip.link('add', ifname='eth0', kind='veth', peer='eth1')
+    eth0 = ip.link_lookup(ifname='eth0')[0]
+    eth1 = ip.link_lookup(ifname='eth1')[0]
+    ip.addr('add', index=eth1, address='10.0.0.1', broadcast='10.0.0.255', mask=24)
+    ip.link('set', index=eth0, net_ns_pid=pid)
+    ip.link('set', index=eth1, state='up')
 
 
 def start_container(name, rootfs, command, args,):
     th = multiprocessing.Process(target=mk_veth)
     th.start()
-    print(f"Starting container!")
-
     user_id = os.geteuid()
     group_id = os.getegid()
 
@@ -369,4 +371,6 @@ if __name__ == "__main__":
             args.args,
         )
     except KeyboardInterrupt:
-        subprocess.check_output(['ip', 'link', 'del', 'eth1'])
+        ip = IPRoute()
+        eth1 = ip.link_lookup(ifname='eth1')[0]
+        ip.link('del', index=eth1)
