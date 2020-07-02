@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# https://github.com/kragniz/omochabako/
+
 
 import argparse
 import ctypes
