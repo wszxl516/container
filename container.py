@@ -5,6 +5,7 @@
 import argparse
 import ctypes
 import os
+import signal
 import socket
 from pyroute2 import IPRoute
 import multiprocessing
@@ -144,7 +145,7 @@ def set_mount_propagation():
 
 def pivot_root(new_root_dir):
     mount(new_root_dir, new_root_dir, "bind", MS_BIND | MS_REC)
-    old_root = os.path.join(new_root_dir, ".old_root")
+    old_root = os.path.join(new_root_dir, "tmp/.old_root")
     if not os.path.exists(old_root):
         os.makedirs(old_root)
     # pivot_root主要是把整个系统切换到一个新的root目录，而移除对之前root文件系统的依赖，这样你就能够umount原先的root文件系统
@@ -152,7 +153,7 @@ def pivot_root(new_root_dir):
     libc.pivot_root(new_root_dir.encode("utf-8"), old_root.encode("utf-8"))
     os.chdir("/")
 
-    old_root = os.path.join("/", ".old_root")
+    old_root = os.path.join("/", "tmp/.old_root")
     return old_root
 
 
@@ -207,6 +208,8 @@ def setup_fs(rootfs):
     # it would be nice if this could be devtmpfs instead, but namespacing that
     # seems to be not possible
     mount("tmpfs", "/dev", "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755")
+    os.makedirs('/dev/shm', 0o755)
+    mount("tmpfs", "/dev/shm", "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755")
 
     # populate /dev with some devices from the host
     bind_dev_nodes(old_root)
@@ -329,7 +332,10 @@ def start_container(name, rootfs, command, args,):
     else:
         # this is the parent, just wait for the child to exit
         print('Container\tPID:', pid)
-        os.waitpid(pid, 0)
+        try:
+            os.waitpid(pid, 0)
+        except (KeyboardInterrupt, EOFError):
+            os.kill(pid, signal.SIGKILL)
 
 
 def get_arguments():
