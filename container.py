@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-
-
-
 import argparse
 import ctypes
 import os
 import signal
 import socket
+import sys
+
 from pyroute2 import IPRoute
 import multiprocessing
+
 libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
 sys_unshare = 272  # https://filippo.io/linux-syscall-table/
-
 
 # pulled from linux/sched.h
 CLONE_VM = 0x00000100  # set if VM shared between processes
@@ -39,16 +38,15 @@ CLONE_NEWPID = 0x20000000  # New pid namespace
 CLONE_NEWNET = 0x40000000  # New network namespace
 CLONE_IO = 0x80000000  # Clone io context
 
-
 # pulled from linux/fs.h
-MS_RDONLY = 1     # Mount read-only
-MS_NOSUID = 2     # Ignore suid and sgid bits
-MS_NODEV = 4     # Disallow access to device special files
-MS_NOEXEC = 8     # Disallow program execution
-MS_SYNCHRONOUS = 16    # Writes are synced at once
-MS_REMOUNT = 32    # Alter flags of a mounted FS
-MS_MANDLOCK = 64    # Allow mandatory locks on an FS
-MS_DIRSYNC = 128   # Directory modifications are synchronous
+MS_RDONLY = 1  # Mount read-only
+MS_NOSUID = 2  # Ignore suid and sgid bits
+MS_NODEV = 4  # Disallow access to device special files
+MS_NOEXEC = 8  # Disallow program execution
+MS_SYNCHRONOUS = 16  # Writes are synced at once
+MS_REMOUNT = 32  # Alter flags of a mounted FS
+MS_MANDLOCK = 64  # Allow mandatory locks on an FS
+MS_DIRSYNC = 128  # Directory modifications are synchronous
 MS_NOATIME = 1024  # Do not update access times.
 MS_NODIRATIME = 2048  # Do not update directory access times
 MS_BIND = 4096
@@ -71,9 +69,6 @@ UMOUNT_UNUSED = 0x80000000  # Flag guaranteed to be unused
 
 
 def unshare(flags):
-    """
-
-    """
     libc.syscall.argtypes = [ctypes.c_int, ctypes.c_int]
     r = libc.syscall(sys_unshare, flags)
     if r < 0:
@@ -104,9 +99,6 @@ def umount(target):
 
 
 def map_user(id_inside_ns, id_outside_ns, length=1, pid=None):
-    """
-    把容器中的uid和真实系统的uid给映射在一起
-    """
     if pid is None:
         pid = os.getpid()
 
@@ -115,31 +107,20 @@ def map_user(id_inside_ns, id_outside_ns, length=1, pid=None):
 
 
 def map_group(id_inside_ns, id_outside_ns, length=1, pid=None):
-    """
-    把容器中的gid和真实系统的gid给映射在一起
-    """
     if pid is None:
         pid = os.getpid()
-
     with open("/proc/{}/gid_map".format(pid), "w") as f:
         f.write(f"{id_inside_ns} {id_outside_ns} {length}")
 
 
 def setgroups_write(pid=None):
-    """
-    限制在新user namespace里面调用setgroups函数来设置groups
-    """
     if pid is None:
         pid = os.getpid()
-
     with open(f"/proc/{pid}/setgroups", "w") as f:
         f.write("deny")
 
 
 def set_mount_propagation():
-    """
-    将根目录下的所有挂载以递归方式标记为私有
-    """
     mount("none", "/", None, MS_REC | MS_PRIVATE, None)
 
 
@@ -148,8 +129,6 @@ def pivot_root(new_root_dir):
     old_root = os.path.join(new_root_dir, "tmp/.old_root")
     if not os.path.exists(old_root):
         os.makedirs(old_root)
-    # pivot_root主要是把整个系统切换到一个新的root目录，而移除对之前root文件系统的依赖，这样你就能够umount原先的root文件系统
-    # 而chroot是针对某个进程，而系统的其它部分依旧运行于老的root目录。
     libc.pivot_root(new_root_dir.encode("utf-8"), old_root.encode("utf-8"))
     os.chdir("/")
 
@@ -158,10 +137,6 @@ def pivot_root(new_root_dir):
 
 
 def bind_dev_nodes(old_root):
-    """
-    挂载字符设备
-    """
-
     devices = (
         "dev/tty",
         "dev/null",
@@ -179,44 +154,21 @@ def bind_dev_nodes(old_root):
             os.remove(new_device)
 
         open(new_device, "a").close()
-
-        # mount the device. Really, we'd want to mknod each of these, but
-        # that's a privileged operation
         mount(host_device, new_device, "bind", MS_BIND)
 
 
 def symlink_many(mapping):
-    """
-    Symlink a set of files.
-
-    Mapping is a dict containing a mapping between source:destination.
-    """
-
     for source, destination in mapping.items():
         os.symlink(source, destination)
 
 
 def setup_fs(rootfs):
     old_root = pivot_root(rootfs)
-
-    # mount a /proc filesystem in this namespace. Without this, tools like
-    # ps and top will read from the global /proc and display the incorrect
-    # information about processes
     mount("proc", "/proc", "proc", MS_MGC_VAL)
-
-    # pretty self-explanatory - mount a tmpfs on /dev
-    # it would be nice if this could be devtmpfs instead, but namespacing that
-    # seems to be not possible
     mount("tmpfs", "/dev", "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755")
     os.makedirs('/dev/shm', 0o755)
     mount("tmpfs", "/dev/shm", "tmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755")
-
-    # populate /dev with some devices from the host
     bind_dev_nodes(old_root)
-
-    # mount pseudo-terminal interface
-    # I found this page to be useful:
-    #     http://free-electrons.com/kerneldoc/latest/filesystems/devpts.txt
     os.makedirs("/dev/pts", 0o755)
     mount(
         "devpts",
@@ -287,15 +239,11 @@ def mk_veth():
     ip.link('set', index=eth1, state='up')
 
 
-def start_container(name, rootfs, command, args,):
+def start_container(name, rootfs, command, args):
     th = multiprocessing.Process(target=mk_veth)
     th.start()
     user_id = os.geteuid()
     group_id = os.getegid()
-
-    # unshare the following namespaces with the host system (these are all the
-    # available namespace)
-
     unshare(
         CLONE_NEWPID  # pid namespace
         | CLONE_NEWNET  # network namespace
@@ -328,7 +276,7 @@ def start_container(name, rootfs, command, args,):
             "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "LD_LIBRARY_PATH": "/usr/lib:/usr/local/lib:/lib:/lib64",
             "TERM": "xterm",
-            })
+        })
     else:
         # this is the parent, just wait for the child to exit
         print('Container\tPID:', pid)
@@ -338,45 +286,90 @@ def start_container(name, rootfs, command, args,):
             os.kill(pid, signal.SIGKILL)
 
 
-def get_arguments():
+def get_arguments(_type='container'):
     parser = argparse.ArgumentParser(description="Toy container runtime")
+    if _type == 'container':
+        parser.add_argument(
+            "-n",
+            "--name",
+            metavar="hostname",
+            default=socket.gethostname() + 'container',
+            help="name of  container",
+        )
 
-    parser.add_argument(
-        "-n",
-        "--name",
-        metavar="hostname",
-        default=socket.gethostname()+'container',
-        help="name of  container",
-    )
-
-    parser.add_argument(
-        "-f",
-        "--rootfs",
-        help=" container` rootfs",
-    )
-    parser.add_argument(
-        "command", metavar="COMMAND", help="command to run in the container"
-    )
-    parser.add_argument(
-        "args",
-        metavar="ARG",
-        nargs=argparse.REMAINDER,
-        help="arguments to be passed to command",
-    )
-
+        parser.add_argument(
+            "-f",
+            "--rootfs",
+            help=" container` rootfs",
+        )
+        parser.add_argument(
+            "command", metavar="COMMAND", help="command to run in the container"
+        )
+        parser.add_argument(
+            "args",
+            metavar="ARG",
+            nargs=argparse.REMAINDER,
+            help="arguments to be passed to command",
+        )
+    elif _type == 'nsenter':
+        parser.add_argument(
+            "-p",
+            "--pid",
+            metavar="pid",
+            default=True,
+            help="start shell into container",
+        )
     return parser.parse_args()
 
 
+def ns_enter(pid):
+    ns_type = {'pid': CLONE_NEWPID,
+               'net': CLONE_NEWNET,
+               'uts': CLONE_NEWUTS,
+               'cgroup': CLONE_NEWCGROUP,
+               'ipc': CLONE_NEWIPC,
+               'user': CLONE_NEWUSER,
+               'mnt': CLONE_NEWNS}
+    for name, flags in ns_type.items():
+        fd = os.open(f'/proc/{pid}/ns/{name}', os.O_RDONLY)
+        libc.setns(fd, flags)
+        os.close(fd)
+    libc.chroot('.')
+    libc.chdir('/')
+    fd = os.open('.', os.O_RDONLY)
+    libc.fchdir(fd)
+    os.close(fd)
+    libc.setgroups(0, None)
+    pid = os.fork()
+    if pid == 0:
+        os.execve('/bin/bash', ['/bin/bash'], {
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "LD_LIBRARY_PATH": "/usr/lib:/usr/local/lib:/lib:/lib64",
+            "TERM": "xterm",
+        })
+    else:
+        print('Container\tPID:', pid)
+        try:
+            os.waitpid(pid, 0)
+        except (KeyboardInterrupt, EOFError):
+            os.kill(pid, signal.SIGKILL)
+
+
 if __name__ == "__main__":
-    args = get_arguments()
-    try:
-        start_container(
-            args.name,
-            args.rootfs,
-            args.command,
-            args.args,
-        )
-    except KeyboardInterrupt:
-        ip = IPRoute()
-        eth1 = ip.link_lookup(ifname='eth1')[0]
-        ip.link('del', index=eth1)
+    program = os.path.basename(sys.argv[0])
+    if program == 'nsenter':
+        args = get_arguments('nsenter')
+        ns_enter(int(args.pid))
+    else:
+        args = get_arguments()
+        try:
+            start_container(
+                args.name,
+                args.rootfs,
+                args.command,
+                args.args,
+            )
+        except KeyboardInterrupt:
+            ip = IPRoute()
+            eth1 = ip.link_lookup(ifname='eth1')[0]
+            ip.link('del', index=eth1)
