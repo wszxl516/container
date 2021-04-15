@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import ctypes
+from ctypes import util as c_util
 import os
 import signal
 import socket
@@ -8,10 +9,6 @@ import sys
 
 from pyroute2 import IPRoute
 import multiprocessing
-
-libc = ctypes.CDLL("libc.so.6", use_errno=True)
-
-sys_unshare = 272  # https://filippo.io/linux-syscall-table/
 
 # pulled from linux/sched.h
 CLONE_VM = 0x00000100  # set if VM shared between processes
@@ -66,42 +63,43 @@ MNT_DETACH = 0x00000002  # Just detach from the tree
 MNT_EXPIRE = 0x00000004  # Mark for expiry
 UMOUNT_NOFOLLOW = 0x00000008  # Don't follow symlink on umount
 UMOUNT_UNUSED = 0x80000000  # Flag guaranteed to be unused
+libc = ctypes.CDLL(c_util.find_library('c'), use_errno=True)
 
 
 def unshare(flags):
+    sys_unshare = 272  # https://filippo.io/linux-syscall-table/
     libc.syscall.argtypes = [ctypes.c_int, ctypes.c_int]
     r = libc.syscall(sys_unshare, flags)
     if r < 0:
-        errno = ctypes.get_errno()
-        raise RuntimeError(f"Error running unshare: {os.strerror(errno)}")
+        err_no = ctypes.get_errno()
+        raise RuntimeError(f"Error running unshare: {os.strerror(err_no)}")
 
 
 def mount(source, target, fs, flags, options=None):
     r = libc.mount(
         source.encode("utf-8"),
         target.encode("utf-8"),
-        fs.encode("utf-8") if fs else None,
+        fs.encode("utf-8") if isinstance(fs, str) else None,
         flags,
         options.encode("utf-8") if options else None,
     )
     if r < 0:
-        errno = ctypes.get_errno()
+        err_no = ctypes.get_errno()
         raise RuntimeError(
-            f"Error mounting {source} ({fs}) on {target} with options '{options}': {os.strerror(errno)}"
+            f"Error mount {source} ({fs}) to {target} with options '{options}': {os.strerror(err_no)}"
         )
 
 
 def umount(target):
     r = libc.umount2(target.encode("utf-8"), MNT_DETACH)
     if r < 0:
-        errno = ctypes.get_errno()
-        raise RuntimeError(f"Error umounting {target}: {os.strerror(errno)}")
+        err_no = ctypes.get_errno()
+        raise RuntimeError(f"Error umount {target}: {os.strerror(err_no)}")
 
 
 def map_user(id_inside_ns, id_outside_ns, length=1, pid=None):
     if pid is None:
         pid = os.getpid()
-
     with open(f"/proc/{pid}/uid_map", "w") as f:
         f.write(f"{id_inside_ns} {id_outside_ns} {length}")
 
@@ -113,7 +111,7 @@ def map_group(id_inside_ns, id_outside_ns, length=1, pid=None):
         f.write(f"{id_inside_ns} {id_outside_ns} {length}")
 
 
-def setgroups_write(pid=None):
+def set_groups_write(pid=None):
     if pid is None:
         pid = os.getpid()
     with open(f"/proc/{pid}/setgroups", "w") as f:
@@ -126,13 +124,16 @@ def set_mount_propagation():
 
 def pivot_root(new_root_dir):
     mount(new_root_dir, new_root_dir, "bind", MS_BIND | MS_REC)
-    old_root = os.path.join(new_root_dir, "tmp/.old_root")
+    tmp_root = "tmp/"
+    old_root = os.path.join(new_root_dir, tmp_root)
     if not os.path.exists(old_root):
         os.makedirs(old_root)
-    libc.pivot_root(new_root_dir.encode("utf-8"), old_root.encode("utf-8"))
+    ret = libc.pivot_root(new_root_dir.encode("utf-8"), old_root.encode("utf-8"))
+    if ret < 0:
+        err_no = ctypes.get_errno()
+        raise RuntimeError(f"Error pivot root {new_root_dir}: {os.strerror(err_no)}")
     os.chdir("/")
-
-    old_root = os.path.join("/", "tmp/.old_root")
+    old_root = os.path.join("/", tmp_root)
     return old_root
 
 
@@ -145,14 +146,11 @@ def bind_dev_nodes(old_root):
         "dev/urandom",
         "dev/full",
     )
-
     for device in devices:
         new_device = os.path.join("/", device)
         host_device = os.path.join(old_root, device)
-
         if os.path.isfile(new_device):
             os.remove(new_device)
-
         open(new_device, "a").close()
         mount(host_device, new_device, "bind", MS_BIND)
 
@@ -187,20 +185,14 @@ def setup_fs(rootfs):
             "/proc/self/fd/2": "/dev/stderr",
         }
     )
-
-    # mount kernel /sys interface
     mount("sysfs", "/sys", "sysfs", MS_RDONLY | MS_NOSUID | MS_NOEXEC | MS_NODEV)
-
-    # unmount old root. This will unmount all other filesystems recursively.
-    # For some reason, I found this needed to be done after mounting /proc etc,
-    # otherwise permission errors happened.
     umount(old_root)
 
 
-def get_cpid(ppid):
+def get_tasks(p_pid):
     """
-    :param ppid: parent pid
-    :return: childs pid
+    :param p_pid: parent pid
+    :return: children pid
     """
     tasks = []
     for pid in os.listdir('/proc'):
@@ -208,7 +200,7 @@ def get_cpid(ppid):
             continue
         try:
             with open('/proc/{}/stat'.format(pid))as fp:
-                if ppid.__str__() in fp.read().split(' '):
+                if p_pid.__str__() in fp.read().split(' '):
                     tasks.append(pid)
         except FileNotFoundError:
             pass
@@ -218,11 +210,11 @@ def get_cpid(ppid):
 def mk_veth():
     import time
     while True:
-        ppid = os.getppid()
+        p_pid = os.getppid()
         pid = os.getpid()
-        tasks = get_cpid(ppid)
+        tasks = get_tasks(p_pid)
         tasks.remove(pid)
-        tasks.remove(ppid)
+        tasks.remove(p_pid)
         if not tasks:
             time.sleep(0.1)
             continue
@@ -230,13 +222,13 @@ def mk_veth():
             pid = tasks[0]
             break
 
-    ip = IPRoute()
-    ip.link('add', ifname='eth0', kind='veth', peer='eth1')
-    eth0 = ip.link_lookup(ifname='eth0')[0]
-    eth1 = ip.link_lookup(ifname='eth1')[0]
-    ip.addr('add', index=eth1, address='10.0.0.1', broadcast='10.0.0.255', mask=24)
-    ip.link('set', index=eth0, net_ns_pid=pid)
-    ip.link('set', index=eth1, state='up')
+    ip_route = IPRoute()
+    ip_route.link('add', ifname='eth0', kind='veth', peer='eth1')
+    eth_0 = ip_route.link_lookup(ifname='eth0')[0]
+    eth_1 = ip_route.link_lookup(ifname='eth1')[0]
+    ip_route.addr('add', index=eth_1, address='10.0.0.1', broadcast='10.0.0.255', mask=24)
+    ip_route.link('set', index=eth_0, net_ns_pid=pid)
+    ip_route.link('set', index=eth_1, state='up')
 
 
 def start_container(name, rootfs, command, args):
@@ -255,16 +247,12 @@ def start_container(name, rootfs, command, args):
     )
     # stop mounts leaking to host
     set_mount_propagation()
-
     # allow us to modify groups in a namespace
-    setgroups_write()
-
+    set_groups_write()
     # map current user to root
     map_user(0, user_id)
-
     # map current group to group 0 (normally wheel)
     map_group(0, group_id)
-
     # add a new hostname
     socket.sethostname(name)
     # fork to enter the namespace
@@ -279,6 +267,51 @@ def start_container(name, rootfs, command, args):
         })
     else:
         # this is the parent, just wait for the child to exit
+        print('Container\tPID:', pid)
+        try:
+            os.waitpid(pid, 0)
+        except (KeyboardInterrupt, EOFError):
+            os.kill(pid, signal.SIGKILL)
+
+
+def ns_enter(pid):
+    ns_type = {'pid': CLONE_NEWPID,
+               'net': CLONE_NEWNET,
+               'uts': CLONE_NEWUTS,
+               'cgroup': CLONE_NEWCGROUP,
+               'ipc': CLONE_NEWIPC,
+               'user': CLONE_NEWUSER,
+               'mnt': CLONE_NEWNS}
+    for name, flags in ns_type.items():
+        fd = os.open(f'/proc/{pid}/ns/{name}', os.O_RDONLY)
+        libc.setns(fd, flags)
+        os.close(fd)
+    ret = libc.chroot('.')
+    if ret < 0:
+        err_no = ctypes.get_errno()
+        raise RuntimeError(f"Error chroot .: {os.strerror(err_no)}")
+    ret = libc.chdir('/')
+    if ret < 0:
+        err_no = ctypes.get_errno()
+        raise RuntimeError(f"Error chdir /: {os.strerror(err_no)}")
+    fd = os.open('.', os.O_RDONLY)
+    ret = libc.fchdir(fd)
+    os.close(fd)
+    if ret < 0:
+        err_no = ctypes.get_errno()
+        raise RuntimeError(f"Error fchdir .: {os.strerror(err_no)}")
+    # ret = libc.setgroups(0, None)
+    # if ret < 0:
+    #     err_no = ctypes.get_errno()
+    #     raise RuntimeError(f"Error setgroups 0: {os.strerror(err_no)}")
+    pid = os.fork()
+    if pid == 0:
+        os.execve('/bin/bash', ['/bin/bash'], {
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "LD_LIBRARY_PATH": "/usr/lib:/usr/local/lib:/lib:/lib64",
+            "TERM": "xterm",
+        })
+    else:
         print('Container\tPID:', pid)
         try:
             os.waitpid(pid, 0)
@@ -311,7 +344,7 @@ def get_arguments(_type='container'):
             nargs=argparse.REMAINDER,
             help="arguments to be passed to command",
         )
-    elif _type == 'nsenter':
+    elif _type == 'enter':
         parser.add_argument(
             "-p",
             "--pid",
@@ -322,45 +355,12 @@ def get_arguments(_type='container'):
     return parser.parse_args()
 
 
-def ns_enter(pid):
-    ns_type = {'pid': CLONE_NEWPID,
-               'net': CLONE_NEWNET,
-               'uts': CLONE_NEWUTS,
-               'cgroup': CLONE_NEWCGROUP,
-               'ipc': CLONE_NEWIPC,
-               'user': CLONE_NEWUSER,
-               'mnt': CLONE_NEWNS}
-    for name, flags in ns_type.items():
-        fd = os.open(f'/proc/{pid}/ns/{name}', os.O_RDONLY)
-        libc.setns(fd, flags)
-        os.close(fd)
-    libc.chroot('.')
-    libc.chdir('/')
-    fd = os.open('.', os.O_RDONLY)
-    libc.fchdir(fd)
-    os.close(fd)
-    libc.setgroups(0, None)
-    pid = os.fork()
-    if pid == 0:
-        os.execve('/bin/bash', ['/bin/bash'], {
-            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "LD_LIBRARY_PATH": "/usr/lib:/usr/local/lib:/lib:/lib64",
-            "TERM": "xterm",
-        })
-    else:
-        print('Container\tPID:', pid)
-        try:
-            os.waitpid(pid, 0)
-        except (KeyboardInterrupt, EOFError):
-            os.kill(pid, signal.SIGKILL)
-
-
 if __name__ == "__main__":
     program = os.path.basename(sys.argv[0])
-    if program == 'nsenter':
-        args = get_arguments('nsenter')
+    if program == 'enter':
+        args = get_arguments('enter')
         ns_enter(int(args.pid))
-    else:
+    elif program == 'container':
         args = get_arguments()
         try:
             start_container(

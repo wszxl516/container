@@ -1,8 +1,8 @@
 # python-container
 
-sudo ./start.sh&
+sudo ./start.sh
 
-sudo ./nsenter -p pid
+sudo ./enter -p pid
 # start a DHCP server 
 sudo dnsmasq --no-daemon --listen-address=10.0.0.1 --interface=eth1 --dhcp-range=10.0.0.2,10.0.0.254  --dhcp-leasefile=./dnsmasq.leases --port=0
 
