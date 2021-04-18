@@ -7,11 +7,13 @@ import socket
 from pyroute2 import IPRoute
 import sys
 import multiprocessing
+import subprocess
+from log import Logger
 
 
 class Veth(multiprocessing.Process):
     def __init__(self, name):
-        super(Veth, self).__init__(group=None, target=None, name=name, args=(), kwargs={}, daemon=True)
+        super(Veth, self).__init__(group=None, target=None, name=name, args=(), kwargs={}, daemon=None)
 
     def run(self) -> None:
         self.create_veth()
@@ -38,12 +40,10 @@ class Veth(multiprocessing.Process):
     def create_veth(self):
         import time
         while True:
-            pid = os.getpid()
             tasks = self.get_child(os.getppid())
-            tasks.remove(pid)
+            tasks.remove(os.getpid())
             if not tasks:
                 time.sleep(1)
-                continue
             else:
                 pid = tasks[0]
                 break
@@ -163,7 +163,8 @@ class Container:
             })
         else:
             # this is the parent, just wait for the child to exit
-            print('Container\tPID:', pid)
+            self.eth.join()
+            Logger.info(f'Container\tPID: {pid}')
             try:
                 os.waitpid(pid, 0)
             except (KeyboardInterrupt, EOFError):
@@ -171,10 +172,14 @@ class Container:
 
 
 class Enter:
-    def __init__(self, pid: int, cmd: list):
+    def __init__(self, pid: int, cmd: list, env=None, console=True):
         self.pid = pid
         self.cmd = cmd
         self.child = None
+        self.env = env
+        if self.env is None:
+            self.env = {}
+        self.console = console
 
     def __enter__(self):
         ns_type = {'pid': libc.CLONE_NEWPID,
@@ -199,16 +204,23 @@ class Enter:
         if self.child is not None:
             os.kill(self.child, signal.SIGKILL)
 
+    def run(self):
+        if self.console:
+            os.execve(self.cmd[0], self.cmd, self.env)
+        else:
+            p = subprocess.Popen(args=self.cmd, env=self.env, shell=False,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
+            stdout, stderr = p.communicate()
+            print(stdout.decode(), file=sys.stdout)
+            print(stderr.decode(), file=sys.stderr)
+
     def fork_cmd(self):
         pid = os.fork()
         if pid == 0:
-            os.execve(self.cmd[0], self.cmd, {
-                'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-                'LD_LIBRARY_PATH': '/usr/lib:/usr/local/lib:/lib:/lib64',
-                'TERM': 'xterm',
-            })
+            self.run()
         else:
-            print('Container\tPID:', pid)
+            Logger.info(f'Container\tPID: {pid}')
             try:
                 os.waitpid(pid, 0)
             except (KeyboardInterrupt, EOFError):
@@ -242,8 +254,19 @@ def get_arguments(_type='container'):
             '-p',
             '--pid',
             metavar='pid',
-            default=True,
             help='start shell into container',
+        )
+        parser.add_argument(
+            '-c',
+            '--console',
+            default=False,
+            action='store_true',
+            help='foreground or background default false')
+        parser.add_argument(
+            'command',
+            metavar='ARG',
+            nargs=argparse.REMAINDER,
+            help='command and arguments',
         )
     return parser.parse_args()
 
@@ -252,7 +275,7 @@ if __name__ == '__main__':
     program = os.path.basename(sys.argv[0])
     if program == 'enter':
         args = get_arguments('enter')
-        with Enter(int(args.pid), ['/bin/bash']):
+        with Enter(int(args.pid), args.command, console=args.console):
             pass
     elif program == 'container':
         args = get_arguments()

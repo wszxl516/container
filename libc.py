@@ -2,6 +2,7 @@ import ctypes
 import sys
 from ctypes import util as c_util
 from functools import wraps
+from log import Logger
 import os
 
 # /usr/include/bits/sched.h
@@ -65,7 +66,9 @@ def catch_error(func):
         ret = func(*args, **kwargs)
         if ret < 0:
             err_no = ctypes.get_errno()
-            print(func.__name__, args if args else kwargs, os.strerror(err_no))
+            Logger.error('call function {}, arguments: {}, failed: {}.'.format(func.__name__,
+                                                                               args if args else kwargs,
+                                                                               os.strerror(err_no)))
             sys.exit(1)
     return catch
 
