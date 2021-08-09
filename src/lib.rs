@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt::{Display, Formatter};
-use std::fs;
+use std::{fs};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path};
 #[allow(unused_imports)]
@@ -13,6 +13,7 @@ use std::os::unix::io::AsRawFd;
 use env_logger::{fmt::Color, Builder};
 use std::io::Write;
 use log::Level;
+
 
 
 const BIND_DEV_NODES: [&str; 6] = [
@@ -154,7 +155,7 @@ impl<'a> Container<'a> {
             env,
             pid: unistd::getpid(),
             uid: unistd::geteuid(),
-            gid: unistd::getegid(),
+            gid: unistd::getegid()
         }
     }
     fn map_usr_grp(&self)->Result<(), anyhow::Error> {
@@ -238,13 +239,24 @@ impl<'a> Container<'a> {
         mount::umount2(old_root.to_str().unwrap(), mount::MntFlags::MNT_DETACH)?;
         Ok(())
     }
-    pub fn start(&self) -> Result<(), anyhow::Error>{
+    pub fn start(&'a mut self) -> Result<(), anyhow::Error>{
         for sys_path in ["proc", "dev", "tmp", "sys"]{
             Path::new(self.root)
                 .join(sys_path)
                 .exists().eq(&false)
                 .then(||fs::create_dir(Path::new(self.root)
                     .join(sys_path)));
+        }
+        match unsafe { unistd::fork() }? {
+            ForkResult::Parent { child, .. } => {
+                info!("network pid: {}", child);
+            }
+            ForkResult::Child => {
+                network::Network::new(self.name.to_string(),
+                                                         "10.0.0.1/24".to_string(),
+                                                    self.pid.as_raw() as u32)
+                    .start();
+            }
         }
         let flags = sched::CloneFlags::CLONE_NEWPID |
             sched::CloneFlags::CLONE_NEWNET |
@@ -254,7 +266,7 @@ impl<'a> Container<'a> {
             sched::CloneFlags::CLONE_NEWIPC |
             sched::CloneFlags::CLONE_NEWUSER;
         debug!("unshare!");
-        sched::unshare(flags).unwrap();
+        sched::unshare(flags)?;
         mount::mount(Some("none"),
                      "/",
                      Some(""),
@@ -373,4 +385,122 @@ pub fn init_logger() {
             )
         })
         .init();
+}
+
+pub mod network{
+    use futures::stream::TryStreamExt;
+    use ipnetwork::IpNetwork;
+    use rtnetlink::new_connection;
+    use std::fs;
+    use std::io::Read;
+    use std::collections::HashSet;
+    use std::thread;
+    use std::time;
+    #[derive(Clone, Debug)]
+    pub struct Network {
+        name: String,
+        pid: u32,
+        ip_address0: IpNetwork,
+    }
+
+    impl Network {
+        pub fn new(name: String, ip_address0: String, pid: u32) -> Network {
+            Network { name, pid, ip_address0: ip_address0.parse::<IpNetwork>().unwrap()}
+        }
+        pub fn start(&mut self) {
+            loop {
+                let x= Network::find_child(self.pid);
+                if x>0 {
+                    break
+                }
+                thread::sleep(time::Duration::new(1, 0));
+            }
+
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_io()
+                .build()
+                .unwrap()
+                .block_on(self.v_eth())
+                .unwrap();
+        }
+        async fn v_eth(&mut self) -> Result<(), anyhow::Error> {
+            let (connection, handle, _) = new_connection().unwrap();
+            tokio::spawn(connection);
+            handle
+                .link()
+                .add()
+                .veth(format!("{}_eth0", self.name), format!("{}_eth1", self.name))
+                .execute()
+                .await?;
+            let eth0 = handle
+                .link()
+                .get()
+                .set_name_filter(format!("{}_eth0", self.name))
+                .execute()
+                .try_next()
+                .await
+                .unwrap()
+                .unwrap();
+            handle.address()
+                .add(eth0.header.index, self.ip_address0.ip(), self.ip_address0.prefix())
+                .execute().await?;
+            handle.link().set(eth0.header.index).up().execute().await?;
+            let eth1 = handle
+                .link()
+                .get()
+                .set_name_filter(format!("{}_eth1", self.name))
+                .execute()
+                .try_next()
+                .await
+                .unwrap()
+                .unwrap();
+            handle.link().set(eth1.header.index).setns_by_pid(self.pid).execute().await?;
+            Ok(())
+        }
+        fn find_child(ppid: u32) -> u32{
+            let mut pid = fs::read_dir("/proc")
+                .unwrap()
+                .filter(|p| {
+                    match p
+                        .as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_str()
+                        .unwrap()
+                        .parse::<u64>() {
+                        Ok(_) => true,
+                        Err(_) => false
+                    }
+                }
+                )
+                .map(|pid| {
+                    let mut data = Vec::new();
+                    fs::File::open(format!("{}/stat", pid
+                        .as_ref()
+                        .unwrap()
+                        .path()
+                        .to_str()
+                        .unwrap()))
+                        .unwrap()
+                        .read_to_end(&mut data)
+                        .unwrap();
+                    let ppid_1 = String::from_utf8(data)
+                        .unwrap()
+                        .as_str()
+                        .split(" ")
+                        .map(|x|x.parse::<u32>().unwrap_or(0)).collect::<Vec<u32>>()[3];
+                    if ppid_1 == ppid{
+                        pid.as_ref().unwrap().file_name().to_str().unwrap().parse::<u32>().unwrap()
+                    }
+                    else {
+                        0
+                    }
+                }).collect::<HashSet<u32>>();
+            pid.remove(&0u32);
+            match pid.is_empty() {
+                true => {0}
+                false => {pid.iter().collect::<Vec<&u32>>()[0].clone()}
+            }
+        }
+    }
 }

@@ -2,7 +2,6 @@ use clap::{App, Arg, SubCommand};
 use log::{debug, error};
 use std::path;
 use std::process;
-
 mod lib;
 
 fn main() {
@@ -146,6 +145,7 @@ fn main() {
                     );
                     process::exit(1);
                 });
+
             lib::Container::new(name, root, init, args, env)
                 .start()
                 .unwrap_or_else(|e| error!("{}", e.to_string()))
