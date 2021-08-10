@@ -1,8 +1,8 @@
 [package]
-name = "container"
+name = "container-rs"
 version = "0.1.0"
 edition = "2018"
-license = "GPL"
+license = "MIT"
 description = "simple container cli and lib!"
 homepage = "https://github.com/wszxl516/container"
 repository = "https://github.com/wszxl516/container.git"
