@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::Read;
+use std::io::{Read};
 use std::thread;
 use std::time;
 use nix::unistd;
@@ -8,6 +8,7 @@ use nix::unistd;
 use futures::stream::TryStreamExt;
 use ipnetwork::IpNetwork;
 use rtnetlink::new_connection;
+use anyhow::Context;
 
 #[derive(Clone, Debug)]
 pub struct Network {
@@ -28,7 +29,7 @@ impl Network {
     }
     pub fn start(&mut self) -> Result<(), anyhow::Error>{
         loop {
-            let x = Network::find_child(self.pid);
+            let x = Network::find_child(self.pid).with_context(||"Error to find child process!")?;
             if x > 0 {
                 break;
             }
@@ -39,7 +40,7 @@ impl Network {
             .enable_io()
             .build()
             .unwrap()
-            .block_on(self.v_eth())?;
+            .block_on(self.v_eth()).with_context(||"Error to setup namespace veth!")?;
         Ok(())
     }
     async fn v_eth(&mut self) -> Result<(), anyhow::Error> {
@@ -83,7 +84,7 @@ impl Network {
             .enable_io()
             .build()
             .unwrap()
-            .block_on(self.ns_ip())?;
+            .block_on(self.ns_ip()).with_context(||"Error to setup namespace veth!")?;
         Ok(())
     }
     async fn ns_ip(&self)-> Result<(), anyhow::Error>{
@@ -104,7 +105,7 @@ impl Network {
         handle.link().set(eth1.header.index).up().execute().await?;
         Ok(())
     }
-    fn find_child(ppid: i32) -> i32 {
+    fn find_child(ppid: i32) -> Result<i32, anyhow::Error> {
         let mut pid = fs::read_dir("/proc")
             .unwrap()
             .filter(|p| {
@@ -115,40 +116,45 @@ impl Network {
                     .to_str()
                     .unwrap()
                     .parse::<u64>() {
-                    Ok(_) => true,
-                    Err(_) => false
+                        Ok(_) => true,
+                        Err(_) => false
                 }
             }
             )
             .map(|pid| {
                 let mut data = Vec::new();
-                fs::File::open(format!("{}/stat", pid
-                    .as_ref()
-                    .unwrap()
-                    .path()
-                    .to_str()
-                    .unwrap()))
-                    .unwrap()
-                    .read_to_end(&mut data)
-                    .unwrap();
-                let ppid_1 = String::from_utf8(data)
-                    .unwrap()
-                    .as_str()
-                    .split(" ")
-                    .map(|x| x.parse::<i32>().unwrap_or(0)).collect::<Vec<i32>>()[3];
+                let ppid_1 = match fs::File::open( pid.as_ref().unwrap().path().join("stat"))
+                {
+                    Ok(mut f) => {
+                        match f.read_to_end(&mut data) {
+                            Ok(_) => {
+                                String::from_utf8(data)
+                                    .unwrap()
+                                    .as_str()
+                                    .split(" ")
+                                    .map(|x| x.parse::<i32>().unwrap_or(0)).collect::<Vec<i32>>()[3]
+                            }
+                            Err(_) => {
+                                0
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        0
+                    }
+                };
                 if ppid_1 == ppid {
                     pid.as_ref().unwrap().file_name().to_str().unwrap().parse::<i32>().unwrap()
                 } else {
                     0
                 }
             }).collect::<HashSet<i32>>();
-        let net_pid = unistd::getpid().as_raw();
         pid.remove(&0i32);
-        pid.remove(&net_pid);
+        pid.remove(&unistd::getpid().as_raw());
         match pid.is_empty() {
-            true => { 0 }
+            true => { Ok(0) }
             false => {
-                pid.iter().collect::<Vec<&i32>>()[0].clone()
+                Ok(pid.iter().collect::<Vec<&i32>>()[0].clone())
             }
         }
     }

@@ -154,17 +154,15 @@ fn main() {
             let name = arg_matches.value_of("name").unwrap_or("container");
             let root = arg_matches.value_of("root").unwrap();
             debug!("{} {} {} {} {}", name, root, init, args, env);
-            path::Path::new(format!("{}{}", root, init).as_str())
-                .exists()
-                .eq(&false)
-                .then(|| {
-                    error!(
-                        "init [{:?}] not exists!",
-                        format!("{}{}", root, init).as_str()
-                    );
-                    process::exit(1);
-                });
-
+            let p =  path::Path::new(root).join(path::Path::new(init)
+                .components()
+                .filter(|x|x != &path::Component::RootDir)
+                .map(|x|x.as_os_str().to_str().unwrap())
+                .collect::<Vec<&str>>().join("/"));
+            p.exists().eq(&false).then(||{
+                error!("init [{}] not exists!",  p.display());
+                process::exit(1)
+            });
             container::Container::new(name,
                                       root,
                                       init,

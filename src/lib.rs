@@ -14,7 +14,7 @@ use std::os::unix::io::AsRawFd;
 use env_logger::{fmt::Color, Builder};
 use std::io::Write;
 use log::Level;
-
+use anyhow::Context;
 
 
 const BIND_DEV_NODES: [&str; 6] = [
@@ -290,9 +290,9 @@ impl<'a> Container<'a> {
                      Some(""),
                      mount::MsFlags::MS_REC | mount::MsFlags::MS_PRIVATE,
                      Some(""))?;
-        self.map_usr_grp()?;
+        self.map_usr_grp().with_context(||"failed to map_usr_grp!")?;
         info!("set hostname to {}", self.name);
-        unistd::sethostname(self.name)?;
+        unistd::sethostname(self.name).with_context(||"failed to set hostname!")?;
         debug!("fork!");
         match unsafe { unistd::fork() }? {
             ForkResult::Parent { child, .. } => {
@@ -300,14 +300,14 @@ impl<'a> Container<'a> {
                 sys::wait::waitpid(child, None)?;
             }
             ForkResult::Child => {
-                self.setup_fs()?;
+                self.setup_fs().with_context(||"failed to setup fs!")?;
                 let cmd = CString::new(self.init).unwrap();
                 info!("start init {}!", self.init);
                 info!("arguments: {}", self.args);
                 info!("environment : {}", self.env);
                 unistd::execve(cmd.as_c_str().as_ref(),
                                self.args.as_args().as_slice(),
-                               self.env.as_env().as_slice())?;
+                               self.env.as_env().as_slice()).with_context(||format!("failed to execve {:?}!", cmd))?;
             }
 
         }
