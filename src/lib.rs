@@ -73,6 +73,7 @@ impl Default for Env {
     fn default() -> Self {
         let mut default = HashMap::new();
         default.extend([
+            ("HOME".to_string(), "/root".to_string()),
             ("TERM".to_string(), "linux".to_string()),
             ("USER".to_string(), "root".to_string()),
             ("PWD".to_string(), "/root".to_string()),
