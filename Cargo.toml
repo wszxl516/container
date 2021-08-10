@@ -8,7 +8,7 @@ name = "container"
 path = "src/main.rs"
 
 [lib]
-name = "libcontainer"
+name = "container"
 path = "src/lib.rs"
 plugin = false
 proc-macro = false

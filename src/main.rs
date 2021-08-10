@@ -2,10 +2,10 @@ use clap::{App, Arg, SubCommand};
 use log::{debug, error};
 use std::path;
 use std::process;
-mod lib;
+use container;
 
 fn main() {
-    lib::init_logger();
+    container::init_logger();
     let app = App::new("Minimal linux container tool!")
         .version("0.1.0")
         .author("sun <github.com/wszxl516>")
@@ -54,7 +54,26 @@ fn main() {
                         .value_name("env")
                         .help("environment variables for init process!")
                         .required(false),
-                ),
+                )
+                .arg(
+                    Arg::with_name("out-addr")
+                        .short("o")
+                        .takes_value(true)
+                        .value_name("out")
+                        .help("veth pair of outside namespace one ip address!")
+                        .default_value("10.0.0.1/24")
+                        .required(false)
+                )
+                .arg(
+                    Arg::with_name("ns-addr")
+                        .short("s")
+                        .takes_value(true)
+                        .value_name("out")
+                        .help("veth pair of inside namespace one ip address!")
+                        .default_value("10.0.0.2/24")
+                        .required(false)
+                )
+            ,
         )
         .subcommand(
             SubCommand::with_name("enter")
@@ -96,8 +115,8 @@ fn main() {
                 .map(|x| x.to_string())
                 .collect::<Vec<String>>();
             let bg = arg_matches.is_present("bg");
-            lib::Enter::new(pid, lib::Args { record: cmd }, lib::Env::default(), bg)
-                .start()
+            container::Enter::new(pid, container::Args { record: cmd }, container::Env::default(), bg)
+                .start(||{})
                 .unwrap_or_else(|e| error!("{}", e.to_string()));
         }
     }
@@ -111,7 +130,7 @@ fn main() {
                 .split(" ")
                 .map(|x| x.to_string())
                 .collect::<Vec<String>>();
-            let mut env = lib::Env::default();
+            let mut env = container::Env::default();
             for e in env_list {
                 let (key, value) = e.split_once("=").unwrap_or(("", ""));
                 if key.is_empty() || value.is_empty() {
@@ -125,7 +144,7 @@ fn main() {
                 .split(" ")
                 .map(|x| x.to_string())
                 .collect::<Vec<String>>();
-            let mut args = lib::Args::new();
+            let mut args = container::Args::new();
             args.insert(init.to_string());
             for arg in args_list {
                 if !arg.is_empty() {
@@ -146,9 +165,15 @@ fn main() {
                     process::exit(1);
                 });
 
-            lib::Container::new(name, root, init, args, env)
+            container::Container::new(name,
+                                      root,
+                                      init,
+                                      args,
+                                      env,
+                                      arg_matches.value_of("out-addr").unwrap().to_string(),
+                                      arg_matches.value_of("ns-addr").unwrap().to_string())
                 .start()
-                .unwrap_or_else(|e| error!("{}", e.to_string()))
+                .unwrap_or_else(|e| error!("{:?}", e))
         }
     }
 }
