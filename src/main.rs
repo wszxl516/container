@@ -1,3 +1,5 @@
+#![feature(is_symlink)]
+
 use clap::{App, Arg, SubCommand};
 use log::{debug, error};
 use std::path;
@@ -159,10 +161,16 @@ fn main() {
                 .filter(|x|x != &path::Component::RootDir)
                 .map(|x|x.as_os_str().to_str().unwrap())
                 .collect::<Vec<&str>>().join("/"));
-            p.exists().eq(&false).then(||{
-                error!("init [{}] not exists!",  p.display());
-                process::exit(1)
-            });
+            match p.is_symlink() {
+                true => {}
+                false => {
+                    p.exists().eq(&false).then(||{
+                        error!("init [{}] not exists!",  p.display());
+                        process::exit(1)
+                    }
+                    );
+                }
+            }
             container::Container::new(name,
                                       root,
                                       init,

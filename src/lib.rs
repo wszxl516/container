@@ -263,7 +263,7 @@ impl<'a> Container<'a> {
         match unsafe { unistd::fork() }? {
             ForkResult::Parent { child:_, .. } => {}
             ForkResult::Child => {
-                let mut n = net::Network::new(self.name.to_string(),
+                let n = net::Network::new(self.name.to_string(),
                                               self.out_address.clone(),
                                               self.ns_address.clone(),
                                               self.pid.as_raw() as i32);
@@ -271,7 +271,7 @@ impl<'a> Container<'a> {
                 Enter::new(self.pid.as_raw(),
                            Args::new(),
                            Default::default(),
-                           false).start(||n.clone().set_ns().unwrap())?;
+                           false).start(||n.enable_network().unwrap())?;
 
                 std::process::exit(0);
             }

@@ -27,7 +27,7 @@ impl Network {
             ip_address1: ip_address1.parse::<IpNetwork>().unwrap()
         }
     }
-    pub fn start(&mut self) -> Result<(), anyhow::Error>{
+    pub fn start(&self) -> Result<(), anyhow::Error>{
         loop {
             let x = Network::find_child(self.pid).with_context(||"Error to find child process!")?;
             if x > 0 {
@@ -43,7 +43,7 @@ impl Network {
             .block_on(self.v_eth()).with_context(||"Error to setup namespace veth!")?;
         Ok(())
     }
-    async fn v_eth(&mut self) -> Result<(), anyhow::Error> {
+    async fn v_eth(&self) -> Result<(), anyhow::Error> {
         let (connection, handle, _) = new_connection().unwrap();
         tokio::spawn(connection);
         handle
@@ -79,7 +79,7 @@ impl Network {
             .execute().await?;
         Ok(())
     }
-    pub fn set_ns(&mut self) -> Result<(), anyhow::Error>{
+    pub fn enable_network(&self) -> Result<(), anyhow::Error>{
         tokio::runtime::Builder::new_multi_thread()
             .enable_io()
             .build()
