@@ -14,7 +14,7 @@ use std::os::unix::io::AsRawFd;
 use env_logger::{fmt::Color, Builder};
 use std::io::Write;
 use log::Level;
-use anyhow::Context;
+use anyhow::{Context, Error};
 
 
 const BIND_DEV_NODES: [&str; 6] = [
@@ -185,15 +185,18 @@ impl<'a> Container<'a> {
     }
     fn setup_fs(&self)-> Result<(), anyhow::Error>{
         info!("root filesystem {}!", self.root);
-        mount::mount(Some(self.root), self.root,
+        mount::mount(Some(self.root),
+                     self.root,
                      Some(""),
                      mount::MsFlags::MS_REC | mount::MsFlags::MS_BIND,
-                     Some(""))?;
+                     Some(""))
+            .with_context(||format!("mount {} to {} failed!", self.root, self.root))?;
         let tmp_dir = Path::new("tmp");
         let mut old_root = Path::new(self.root).join(tmp_dir);
         debug!("old root: {}", old_root.to_str().unwrap());
         debug!("pivot root!");
-        unistd::pivot_root(self.root, old_root.to_str().unwrap())?;
+        unistd::pivot_root(self.root, old_root.to_str().unwrap())
+            .with_context(||format!("pivot root {} to {} failed!", self.root, old_root.display()))?;
         unistd::chdir("/")?;
         old_root = Path::new("/").join(tmp_dir);
         debug!("old root: {}", old_root.to_str().unwrap());
@@ -202,13 +205,15 @@ impl<'a> Container<'a> {
                      "/proc",
                      Some("proc"),
                      mount::MsFlags::MS_MGC_VAL,
-                     Some(""))?;
+                     Some(""))
+            .with_context(||"mount {} procfs failed!")?;
         debug!("mount /dev!");
         mount::mount(Some("tmpfs"),
                      "/dev",
                      Some("tmpfs"),
                      mount::MsFlags::MS_NOSUID | mount::MsFlags::MS_STRICTATIME,
-                     Some("mode=755"))?;
+                     Some("mode=755"))
+            .with_context(||"mount tmpfs to /dev with mode=755 failed!")?;
         debug!("mount /dev/shm!");
         fs::create_dir("/dev/shm")?;
         fs::set_permissions("/dev/shm", fs::Permissions::from_mode(0o755))?;
@@ -216,7 +221,9 @@ impl<'a> Container<'a> {
                      "/dev/shm",
                      Some("tmpfs"),
                      mount::MsFlags::MS_NOSUID | mount::MsFlags::MS_STRICTATIME,
-                     Some("mode=755"))?;
+                     Some("mode=755"))
+            .with_context(||"mount tmpfs to /dev/shm with mode=755 failed!")?;
+
         for dev in BIND_DEV_NODES {
             let new_dev = Path::new("/").join(dev);
             let host_dev = Path::new(old_root.as_path()).join(dev);
@@ -227,7 +234,8 @@ impl<'a> Container<'a> {
                          &new_dev,
                          Some("bind"),
                          mount::MsFlags::MS_BIND,
-                         Some(""))?;
+                         Some(""))
+                .with_context(||format!("mount bind {} to {} failed!", host_dev.display(), new_dev.display()))?;
         }
         Path::new("/dev/pts").exists().eq(&false).then(|| fs::create_dir("/dev/pts").unwrap());
         fs::set_permissions("/dev/pts", fs::Permissions::from_mode(0o755))?;
@@ -235,10 +243,12 @@ impl<'a> Container<'a> {
                      "/dev/pts",
                      Some("devpts"),
                      mount::MsFlags::MS_NOSUID | mount::MsFlags::MS_NOEXEC,
-                     Some("newinstance,ptmxmode=0666,mode=620"))?;
+                     Some("newinstance,ptmxmode=0666,mode=620"))
+            .with_context(||"mount bind devpts to /dev/pts with newinstance,ptmxmode=0666,mode=620 failed!")?;
         for (src, dst) in SYMBOLIC_LINK {
             debug!("create symbolic link {} to {}", src, dst);
-            symlink(src, dst)?;
+            symlink(src, dst)
+                .with_context(||format!("create symbolic link {} to {} failed!", src, dst))?;
         }
         debug!("mount sysfs!");
         Path::new("/sys").exists().eq(&false).then(|| fs::create_dir("/sys").unwrap());
@@ -246,10 +256,11 @@ impl<'a> Container<'a> {
                      "/sys",
                      Some("sysfs"),
                      mount::MsFlags::MS_RDONLY | mount::MsFlags::MS_NOSUID | mount::MsFlags::MS_NOEXEC | mount::MsFlags::MS_NODEV,
-                     Some(""),
-        )?;
+                     Some(""))
+            .with_context(||"mount sysfs to /sys failed!")?;
         debug!("umount old root {}", old_root.to_str().unwrap());
-        mount::umount2(old_root.to_str().unwrap(), mount::MntFlags::MNT_DETACH)?;
+        mount::umount2(old_root.to_str().unwrap(), mount::MntFlags::MNT_DETACH)
+            .with_context(||format!("umount old root {} failed!", old_root.display()))?;
         Ok(())
     }
     pub fn start(&'a mut self) -> Result<(), anyhow::Error>{
@@ -300,7 +311,13 @@ impl<'a> Container<'a> {
                 sys::wait::waitpid(child, None)?;
             }
             ForkResult::Child => {
-                self.setup_fs().with_context(||"failed to setup fs!")?;
+                match self.setup_fs(){
+                    Ok(_) => {
+                    }
+                    Err(e) => {
+                        println!("{}", e)
+                    }
+                };
                 let cmd = CString::new(self.init).unwrap();
                 info!("start init {}!", self.init);
                 info!("arguments: {}", self.args);
