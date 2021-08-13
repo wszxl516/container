@@ -14,8 +14,7 @@ use std::os::unix::io::AsRawFd;
 use env_logger::{fmt::Color, Builder};
 use std::io::Write;
 use log::Level;
-use anyhow::{Context, Error};
-
+use anyhow::{Context};
 
 const BIND_DEV_NODES: [&str; 6] = [
     "dev/tty",
@@ -41,7 +40,6 @@ const NS_TYPE: [(&str, sched::CloneFlags); 7] = [
     ("user", sched::CloneFlags::CLONE_NEWUSER),
     ("mnt", sched::CloneFlags::CLONE_NEWNS)
 ];
-
 #[derive(Debug, Clone)]
 pub struct Env {
     record: HashMap<String, String>,
@@ -271,8 +269,12 @@ impl<'a> Container<'a> {
                 .then(||fs::create_dir(Path::new(self.root)
                     .join(sys_path)));
         }
+        #[allow(unused_assignments)]
+        let mut net_pid = unistd::Pid::from_raw(0);
         match unsafe { unistd::fork() }? {
-            ForkResult::Parent { child:_, .. } => {}
+            ForkResult::Parent { child, .. } => {
+                net_pid = child
+            }
             ForkResult::Child => {
                 let n = net::Network::new(self.name.to_string(),
                                               self.out_address.clone(),
@@ -308,6 +310,10 @@ impl<'a> Container<'a> {
         match unsafe { unistd::fork() }? {
             ForkResult::Parent { child, .. } => {
                 info!("container pid: {}", child);
+                info!("wait net pid {} to setup network!", net_pid);
+                if net_pid.as_raw() != 0 {
+                    sys::wait::waitpid(net_pid, None)?;
+                }
                 sys::wait::waitpid(child, None)?;
             }
             ForkResult::Child => {
@@ -325,6 +331,7 @@ impl<'a> Container<'a> {
                 unistd::execve(cmd.as_c_str().as_ref(),
                                self.args.as_args().as_slice(),
                                self.env.as_env().as_slice()).with_context(||format!("failed to execve {:?}!", cmd))?;
+                std::process::exit(0)
             }
 
         }
