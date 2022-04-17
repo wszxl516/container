@@ -1,5 +1,3 @@
-#![feature(is_symlink)]
-
 use clap::{App, Arg, SubCommand};
 use log::{debug, error};
 use std::path;
@@ -67,10 +65,10 @@ fn main() {
                         .required(false)
                 )
                 .arg(
-                    Arg::with_name("ns-addr")
+                    Arg::with_name("in-addr")
                         .short("s")
                         .takes_value(true)
-                        .value_name("out")
+                        .value_name("in")
                         .help("veth pair of inside namespace one ip address!")
                         .default_value("10.0.0.2/24")
                         .required(false)
