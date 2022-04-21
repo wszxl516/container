@@ -175,7 +175,7 @@ fn main() {
                                       args,
                                       env,
                                       arg_matches.value_of("out-addr").unwrap().to_string(),
-                                      arg_matches.value_of("ns-addr").unwrap().to_string())
+                                      arg_matches.value_of("in-addr").unwrap().to_string())
                 .start()
                 .unwrap_or_else(|e| error!("{:?}", e))
         }
