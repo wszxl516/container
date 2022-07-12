@@ -3,8 +3,13 @@ use log::{debug, error};
 use std::path;
 use std::process;
 use container;
+use nix::unistd::getuid;
 
 fn main() {
+    if getuid().as_raw() != 0 {
+        println!("\x1b[0;31m Only supports running as the root user.\x1b[0m");
+        return;
+    }
     container::init_logger();
     let app = App::new("Minimal linux container tool!")
         .version("0.1.0")
